@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"sync"
+	"log"
 	"time"
 
 	"github.com/firehourse/cdpkit/browser"
@@ -11,50 +11,33 @@ import (
 )
 
 func main() {
-	// Step 1: 初始化 Manager（共用一個 Chromium 實例）
 	cfg := config.Config{
-		TabLimit: 10,
+		WebSocketURL: "ws://localhost:9222/devtools/browser/<YOUR_ID>",
+		TabLimit:     20,
+		Timeout:      30 * time.Second,
 	}
-	manager, err := browser.NewManagerFromConfig(cfg)
+	bm, err := browser.NewManagerFromConfig(cfg)
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
-	defer manager.Shutdown()
+	defer bm.Shutdown()
 
-	// Step 2: 同時開啟多個 tab，每個 goroutine 控制一個
-	var wg sync.WaitGroup
-	for i := 0; i < 3; i++ {
-		wg.Add(1)
-
-		go func(idx int) {
-			defer wg.Done()
-
-			ctx, cancel, _ := manager.NewPageContext()
-			defer cancel()
-
-			t := tab.New(ctx, cancel)
-
-			url := fmt.Sprintf("https://httpbin.org/html?tab=%d", idx)
-			if err := t.Navigate(url, 5*time.Second); err != nil {
-				fmt.Println("Navigate error:", err)
-				return
-			}
-
-			if err := t.WaitVisible("h1", 3*time.Second); err != nil {
-				fmt.Println("WaitVisible error:", err)
-				return
-			}
-
-			result, err := t.RunJS("document.querySelector('h1').textContent", 2*time.Second)
-			if err != nil {
-				fmt.Println("RunJS error:", err)
-				return
-			}
-
-			fmt.Printf("Tab %d h1: %v\n", idx, result)
-		}(i)
+	ctx, cancel, err := bm.NewPageContext()
+	if err != nil {
+		log.Fatal(err)
 	}
+	tab := tab.New(ctx, cancel, cfg.Timeout)
+	defer tab.Close(bm)
 
-	wg.Wait()
-	fmt.Println("✅ 所有 tab 已執行完畢")
+	if err := tab.Navigate("https://example.org", 0); err != nil {
+		log.Fatal(err)
+	}
+	if err := tab.Spoof(); err != nil {
+		log.Fatal(err)
+	}
+	html, err := tab.HTML(0)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(html)
 }

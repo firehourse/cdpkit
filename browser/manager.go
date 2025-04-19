@@ -1,35 +1,48 @@
+// === browser/manager.go ===
 package browser
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/chromedp/chromedp"
 	"github.com/firehourse/cdpkit/cdp"
 	"github.com/firehourse/cdpkit/config"
-
-	"github.com/chromedp/chromedp"
 )
 
-// BrowserManager 是頂層瀏覽器控制器，負責建立 tab、控制最大分頁數、重啟 Chrome 實例等。
-// 內部調用 config + allocator 層，不持有具體啟動邏輯，而是由 Config 注入控制。
+// BrowserManager 管控與單一 Chrome Session 的所有分頁
 type BrowserManager struct {
-	allocCtx context.Context    // Chrome 全域執行 context
-	cancel   context.CancelFunc // 關閉用 cancel func
+	allocCtx context.Context
+	cancel   context.CancelFunc
 
-	tabLimit int        // 最大允許 tab 數量
-	tabCount int        // 當前活躍 tab 數
-	mu       sync.Mutex // tab 計數保護鎖
+	tabLimit int
+	tabCount int
+	mu       sync.Mutex
 
-	config config.Config // 使用者原始配置，作為重啟 fallback 使用
+	config config.Config
 }
 
-// NewManagerFromConfig 是建立整個瀏覽器控制流程的唯一入口。
-// 你可以自定義 flags、mergeFn、tab 限制等控制行為。
-// 若某些欄位為零值（如 flags），將 fallback 到底層預設。
+// NewManagerFromConfig 建立一個連線到既有 Chrome 的管理器
 func NewManagerFromConfig(cfg config.Config) (*BrowserManager, error) {
-	allocCtx, allocCancel := cdp.NewAllocator(cfg)
+	if cfg.WebSocketURL == "" {
+		return nil, errors.New("WebSocketURL 不可為空")
+	}
+	if !strings.HasPrefix(cfg.WebSocketURL, "ws://") && !strings.HasPrefix(cfg.WebSocketURL, "wss://") {
+		return nil, fmt.Errorf("無效的 WebSocketURL: %s，必須以 ws:// 或 wss:// 開頭", cfg.WebSocketURL)
+	}
+
+	allocCtx, allocCancel, err := cdp.NewRemoteAllocator(cfg.WebSocketURL)
+	if err != nil {
+		return nil, fmt.Errorf("remote allocator 連線失敗: %w", err)
+	}
+	if cfg.WebSocketURL == "" {
+		return nil, errors.New("WebSocketURL 不可為空")
+	}
 
 	tabLimit := cfg.TabLimit
 	if tabLimit <= 0 {
@@ -45,15 +58,16 @@ func NewManagerFromConfig(cfg config.Config) (*BrowserManager, error) {
 	}, nil
 }
 
-// NewPageContext 開啟一個新的 Chrome tab。當 tab 數超過上限時，將自動重啟瀏覽器。
-// 回傳新的 context（每個 tab 擁有自己的 context）。
+// NewPageContext 申請新的 Tab Context，超過上限時自動重啟瀏覽器
 func (bm *BrowserManager) NewPageContext() (context.Context, context.CancelFunc, error) {
 	bm.mu.Lock()
 	defer bm.mu.Unlock()
 
 	if bm.tabCount >= bm.tabLimit {
-		log.Printf("[BrowserManager] tab 達上限 %d，正在重啟 Chrome", bm.tabLimit)
-		bm.restart()
+		log.Printf("[BrowserManager] 分頁達上限 %d，嘗試重啟 Chrome", bm.tabLimit)
+		if err := bm.restart(); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	ctx, cancel := chromedp.NewContext(bm.allocCtx)
@@ -61,19 +75,38 @@ func (bm *BrowserManager) NewPageContext() (context.Context, context.CancelFunc,
 	return ctx, cancel, nil
 }
 
-// Shutdown 結束整個瀏覽器實例，釋放 Chrome 所有資源。
+// Shutdown 關閉整個 Remote Allocator
 func (bm *BrowserManager) Shutdown() {
-	bm.cancel()
-	log.Println("[BrowserManager] Chrome 已關閉")
+	if bm.cancel != nil {
+		bm.cancel()
+		bm.cancel = nil
+	}
+	log.Println("[BrowserManager] Chrome 已正常關閉")
 }
 
-// restart 根據原始 Config 重新啟動瀏覽器，並清空 tab 計數。
-func (bm *BrowserManager) restart() {
-	bm.cancel()
-	time.Sleep(1 * time.Second)
+// restart 在同一個 WebSocketURL 上重新建立 Allocator
+func (bm *BrowserManager) restart() error {
+	if bm.cancel != nil {
+		bm.cancel()
+	}
+	time.Sleep(time.Second) // 避免馬上重連失敗
 
-	newCtx, newCancel := cdp.NewAllocator(bm.config)
+	newCtx, newCancel, err := cdp.NewRemoteAllocator(bm.config.WebSocketURL)
+	if err != nil {
+		return fmt.Errorf("failed to create new allocator context: %w", err)
+	}
+
 	bm.allocCtx = newCtx
 	bm.cancel = newCancel
 	bm.tabCount = 0
+	return nil
+}
+
+// DecrementTabCount 關閉分頁後回收計數
+func (bm *BrowserManager) DecrementTabCount() {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+	if bm.tabCount > 0 {
+		bm.tabCount--
+	}
 }
