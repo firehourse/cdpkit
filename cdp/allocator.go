@@ -8,29 +8,32 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-// NewAllocator 建立 chromedp 的執行環境（ExecAllocator）
-// 會根據 Config 的 Flags / MergeFn 注入 Chrome 啟動參數
-// 此為最底層構建，實際返回 context 與其取消函數
+// NewAllocator 根據使用者提供的 config，建立 Chrome allocator（執行環境）
+// 支援注入 defaultFlags、flags、合併策略
 func NewAllocator(cfg config.Config) (context.Context, context.CancelFunc) {
-	var mergedFlags []chromedp.ExecAllocatorOption
-
-	if cfg.MergeFn != nil {
-		// 使用外部注入的 flags 合併策略
-		mergedFlags = cfg.MergeFn(config.DefaultConfig().Flags, cfg.Flags)
+	var defaultFlags []chromedp.ExecAllocatorOption
+	if cfg.DefaultFlags != nil {
+		defaultFlags = cfg.DefaultFlags
 	} else {
-		// 使用預設 flags 合併策略
-		mergedFlags = collectFlags(config.DefaultConfig().Flags, cfg.Flags)
+		defaultFlags = config.SafeDefaults()
+	}
+
+	var merged []chromedp.ExecAllocatorOption
+	if cfg.MergeFn != nil {
+		merged = cfg.MergeFn(defaultFlags, cfg.Flags)
+	} else {
+		merged = collectFlags(defaultFlags, cfg.Flags)
 	}
 
 	var allocCtx context.Context
 	var allocCancel context.CancelFunc
-	allocCtx, allocCancel = chromedp.NewExecAllocator(context.Background(), mergedFlags...)
+	allocCtx, allocCancel = chromedp.NewExecAllocator(context.Background(), merged...)
 
 	return allocCtx, allocCancel
 }
 
-// collectFlags 是內建 flags 合併策略（default + user override）
-// 若 key 重複，userFlags 會覆蓋 defaultFlags
+// collectFlags 是預設合併策略（可被覆寫）
+// 會將 defaultFlags + userFlags 合併，後者同名會覆蓋前者
 func collectFlags(defaultFlags []chromedp.ExecAllocatorOption, userFlags []chromedp.ExecAllocatorOption) []chromedp.ExecAllocatorOption {
 	var flagMap map[string]interface{} = make(map[string]interface{})
 

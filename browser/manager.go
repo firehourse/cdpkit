@@ -12,30 +12,26 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-// BrowserManager 是一個統一的頂層控制器，負責調度 Chrome 分頁與實例
-// 通常不直接控制 Chrome，而是透過注入的 Config 與下層 allocator 進行組裝
-// 可支援 tab 數量限制、自動重啟與資源回收等功能
-
+// BrowserManager 是頂層瀏覽器控制器，負責建立 tab、控制最大分頁數、重啟 Chrome 實例等。
+// 內部調用 config + allocator 層，不持有具體啟動邏輯，而是由 Config 注入控制。
 type BrowserManager struct {
-	allocCtx context.Context    // Chromium 全域執行環境 context
-	cancel   context.CancelFunc // 用於關閉整個 allocCtx
-	tabLimit int                // 允許的最大分頁數
-	tabCount int                // 當前已使用的分頁數
-	mu       sync.Mutex         // 保護 tabCount 操作
+	allocCtx context.Context    // Chrome 全域執行 context
+	cancel   context.CancelFunc // 關閉用 cancel func
+
+	tabLimit int        // 最大允許 tab 數量
+	tabCount int        // 當前活躍 tab 數
+	mu       sync.Mutex // tab 計數保護鎖
+
+	config config.Config // 使用者原始配置，作為重啟 fallback 使用
 }
 
-// NewManagerFromConfig 是整個 cdpkit 的入口，根據注入的 config 建立 browser 實例
-// - config.Flags 可自定義 flags
-// - config.TabLimit 控制同時打開的分頁上限
-// - config.MergeFn 可注入 flags 合併策略（預設為內建 collectFlags）
-// - 所有參數皆可為零值，將套用預設邏輯
+// NewManagerFromConfig 是建立整個瀏覽器控制流程的唯一入口。
+// 你可以自定義 flags、mergeFn、tab 限制等控制行為。
+// 若某些欄位為零值（如 flags），將 fallback 到底層預設。
 func NewManagerFromConfig(cfg config.Config) (*BrowserManager, error) {
-	// 建立 allocator context（即 Chrome 啟動參數 + 配置）
-	var allocCtx context.Context
-	var allocCancel context.CancelFunc
-	allocCtx, allocCancel = cdp.NewAllocator(cfg)
+	allocCtx, allocCancel := cdp.NewAllocator(cfg)
 
-	var tabLimit int = cfg.TabLimit
+	tabLimit := cfg.TabLimit
 	if tabLimit <= 0 {
 		tabLimit = 50
 	}
@@ -45,11 +41,12 @@ func NewManagerFromConfig(cfg config.Config) (*BrowserManager, error) {
 		cancel:   allocCancel,
 		tabLimit: tabLimit,
 		tabCount: 0,
+		config:   cfg,
 	}, nil
 }
 
-// NewPageContext 建立新的 Chrome tab，並限制 tab 數量避免資源溢出
-// 若超過上限，會觸發重啟 Chrome 實例（重建 allocCtx）
+// NewPageContext 開啟一個新的 Chrome tab。當 tab 數超過上限時，將自動重啟瀏覽器。
+// 回傳新的 context（每個 tab 擁有自己的 context）。
 func (bm *BrowserManager) NewPageContext() (context.Context, context.CancelFunc, error) {
 	bm.mu.Lock()
 	defer bm.mu.Unlock()
@@ -59,23 +56,24 @@ func (bm *BrowserManager) NewPageContext() (context.Context, context.CancelFunc,
 		bm.restart()
 	}
 
-	var ctx context.Context
-	var cancel context.CancelFunc
-	ctx, cancel = chromedp.NewContext(bm.allocCtx)
+	ctx, cancel := chromedp.NewContext(bm.allocCtx)
 	bm.tabCount++
 	return ctx, cancel, nil
 }
 
-// Shutdown 完整關閉 browser 實例
+// Shutdown 結束整個瀏覽器實例，釋放 Chrome 所有資源。
 func (bm *BrowserManager) Shutdown() {
 	bm.cancel()
 	log.Println("[BrowserManager] Chrome 已關閉")
 }
 
-// restart 強制重啟 Chrome 實例（分頁數歸零）
+// restart 根據原始 Config 重新啟動瀏覽器，並清空 tab 計數。
 func (bm *BrowserManager) restart() {
 	bm.cancel()
 	time.Sleep(1 * time.Second)
-	bm.allocCtx, bm.cancel = chromedp.NewExecAllocator(context.Background(), chromedp.DefaultExecAllocatorOptions[:]...)
+
+	newCtx, newCancel := cdp.NewAllocator(bm.config)
+	bm.allocCtx = newCtx
+	bm.cancel = newCancel
 	bm.tabCount = 0
 }
