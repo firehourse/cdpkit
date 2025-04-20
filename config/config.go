@@ -32,7 +32,9 @@ type Config struct {
 	// WindowSize 瀏覽器窗口大小 [寬, 高]，若為 [0, 0] 則隨機生成
 	WindowSize [2]int
 	// Proxy HTTP/SOCKS5 代理地址，例如 http://proxy.example.com:8080
-	Proxy string
+	Proxy      string
+	ChromePath string // (可選) 指定 chrome 二進位路徑
+	RemotePort int
 }
 
 // SafeDefaults 提供穩定可用的旗標集合
