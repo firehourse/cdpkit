@@ -113,13 +113,24 @@ func newExecManager(cfg config.Config) (*BrowserManager, error) {
 }
 
 func prepareExecOptions(cfg config.Config) []chromedp.ExecAllocatorOption {
-	// 1. 包含默認選項
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("remote-debugging-port", fmt.Sprintf("%d", cfg.RemotePort)),
-		chromedp.Flag("disable-blink-features", "AutomationControlled"),
-	)
+	// 1. 濾掉內建 options 中的 --remote-debugging-port
+	var opts []chromedp.ExecAllocatorOption
+	for _, opt := range chromedp.DefaultExecAllocatorOptions {
+		// 將 option 轉為字串，比對是否為 remote-debugging-port
+		optStr := fmt.Sprintf("%v", opt)
+		if strings.Contains(optStr, "--remote-debugging-port=") {
+			continue
+		}
+		opts = append(opts, opt)
+	}
 
-	// 2. 確保有 headless 設置 (優先使用配置中的，若未指定則使用舊版 headless)
+	// 2. 加入你想設定的 remote port
+	opts = append(opts, chromedp.Flag("remote-debugging-port", fmt.Sprintf("%d", cfg.RemotePort)))
+
+	// 3. 加入常見反指紋 UA 欺騙
+	opts = append(opts, chromedp.Flag("disable-blink-features", "AutomationControlled"))
+
+	// 4. 如果未指定 headless，預設使用舊版 headless 模式
 	hasHeadless := false
 	for k := range cfg.Flags {
 		if k == "headless" {
@@ -127,35 +138,33 @@ func prepareExecOptions(cfg config.Config) []chromedp.ExecAllocatorOption {
 			break
 		}
 	}
-
 	if !hasHeadless {
 		opts = append(opts, chromedp.Flag("headless", true))
 	}
 
-	// 3. 必要的穩定性選項
+	// 5. 加入穩定性建議選項（除非使用者已覆蓋）
 	stabilityOpts := map[string]interface{}{
 		"no-sandbox":             true,
 		"disable-gpu":            true,
 		"disable-dev-shm-usage":  true,
 		"disable-setuid-sandbox": true,
 	}
-
 	for k, v := range stabilityOpts {
 		if _, exists := cfg.Flags[k]; !exists {
 			opts = append(opts, chromedp.Flag(k, v))
 		}
 	}
 
-	// 4. 用戶指定的選項 (覆蓋默認值)
+	// 6. 用戶自定 flags（最高優先）
 	for k, v := range cfg.Flags {
 		opts = append(opts, chromedp.Flag(k, v))
 	}
 
-	// 5. 如果指定了 Chrome 路徑
+	// 7. Chrome 執行檔路徑
 	if cfg.ChromePath != "" {
 		opts = append(opts, chromedp.ExecPath(cfg.ChromePath))
 	} else {
-		// 尋找系統 Chrome
+		// 若沒指定則自動探測
 		if path := findChromePath(); path != "" {
 			log.Printf("[cdpkit] 找到系統 Chrome: %s", path)
 			opts = append(opts, chromedp.ExecPath(path))
