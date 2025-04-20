@@ -1,0 +1,21 @@
+[
+  {
+    "url": "https://example.com",
+    "title": "Example Domain",
+    "data": {
+      "h1": [
+        "Example Domain"
+      ],
+      "links": [
+        {
+          "href": "https://www.iana.org/domains/example",
+          "text": "More information..."
+        }
+      ],
+      "metaDescription": "",
+      "title": "Example Domain"
+    },
+    "elapsed_time": 2787991872,
+    "timestamp": "2025-04-20T05:30:19.788732098Z"
+  }
+]

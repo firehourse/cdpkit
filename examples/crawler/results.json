@@ -1,0 +1,9 @@
+[
+  {
+    "url": "https://example.org",
+    "title": "",
+    "error": "執行腳本失敗: exception \"Uncaught\" (9:0): SyntaxError: Unexpected token 'const'",
+    "timestamp": "2025-04-20T05:17:30.430522489Z",
+    "elapsed_time": "2.025091139s"
+  }
+]
